@@ -1,3 +1,4 @@
+use crate::send;
 use derive_more::Debug;
 use serde::Deserialize;
 use std::process::{Command, Stdio};
@@ -5,10 +6,10 @@ use std::process::{Command, Stdio};
 #[derive(Deserialize, Debug)]
 pub struct ShellParam {
     command: Vec<String>,
-    env: Vec<(String, String)>,
+    env: Option<Vec<(String, String)>>,
 }
 
-pub fn process_shell(shell_param: ShellParam) {
+pub fn process_shell(client_name: String, shell_param: ShellParam) {
     println!("Received shell command: {:?}", shell_param);
 
     if shell_param.command.is_empty() {
@@ -21,8 +22,10 @@ pub fn process_shell(shell_param: ShellParam) {
         cmd.args(&shell_param.command[1..]);
     }
 
-    for (key, value) in shell_param.env {
-        cmd.env(key, value);
+    if let Some(env_vars) = shell_param.env {
+        for (key, value) in env_vars {
+            cmd.env(key, value);
+        }
     }
 
     cmd.stdout(Stdio::inherit())
@@ -34,16 +37,32 @@ pub fn process_shell(shell_param: ShellParam) {
             Ok(status) => {
                 if status.success() {
                     println!("Command executed successfully");
+                    send::send_log_local(
+                        client_name,
+                        "[shell] Command executed successfully".into(),
+                    );
                 } else {
                     eprintln!("Command exited with status: {}", status);
+                    send::send_log_local(
+                        client_name,
+                        format!("[shell] Command exited with status: {}", status),
+                    );
                 }
             }
             Err(e) => {
                 eprintln!("Failed to wait on child process: {}", e);
+                send::send_log_local(
+                    client_name,
+                    format!("[shell] Failed to wait on child process: {}", e),
+                );
             }
         },
         Err(e) => {
             eprintln!("Failed to execute command: {}", e);
+            send::send_log_local(
+                client_name,
+                format!("[shell] Failed to execute command: {}", e),
+            );
         }
     }
 }

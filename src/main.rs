@@ -4,7 +4,10 @@ use derive_more::Debug;
 use futures_util::stream::StreamExt;
 use lapin::{
     Connection, ConnectionProperties, ExchangeKind,
-    options::{BasicConsumeOptions, ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions},
+    options::{
+        BasicAckOptions, BasicConsumeOptions, ExchangeDeclareOptions, QueueBindOptions,
+        QueueDeclareOptions,
+    },
     tcp::{OwnedIdentity, OwnedTLSConfig},
     types::FieldTable,
 };
@@ -13,6 +16,7 @@ use std::fs;
 use std::result::Result::Ok;
 
 mod git_cred;
+mod send;
 mod shell;
 
 struct RabbitMQCerts {
@@ -29,9 +33,9 @@ struct ConnectionConfig {
     #[debug(ignore)]
     pass: String,
     vhost: Option<String>,
+    client_name: Option<String>,
     port: Option<u16>,
     is_secure: bool,
-    routing_key: Option<String>,
     cafile: Option<String>,
     certfile: Option<String>,
     keyfile: Option<String>,
@@ -41,7 +45,7 @@ struct AnalyzedParams {
     amqp_addr: String,
     amqp_addr_for_print: String,
     routing_key: String,
-    user: String,
+    client_name: String,
     cafile: Option<String>,
     certfile: Option<String>,
     keyfile: Option<String>,
@@ -51,7 +55,7 @@ struct AnalyzedParams {
 struct DeliveryData {
     sender: String,
     method: String,
-    payload: String,
+    payload: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -74,29 +78,45 @@ fn get_tls_config(cafile: &str, certfile: &str, keyfile: &str) -> Result<OwnedTL
     })
 }
 
-async fn dispatcher(delivery_data: DeliveryData, user: &String) {
+fn test_receive(client_name: String) {
+    println!("[test] Test message received");
+    send::send_log_local(client_name, "Test message received".into());
+}
+
+async fn dispatcher(delivery_data: DeliveryData, client_name: &String) {
     let sender = delivery_data.sender;
-    if sender == *user {
+    if sender == *client_name {
         return;
     }
 
     let method = delivery_data.method;
-    let payload = delivery_data.payload;
 
     match method.as_str() {
         "git-credential" => {
-            if let Some(cred) = serde_json::from_str::<git_cred::GitCredential>(&payload).ok() {
-                let _ = git_cred::process_credential(cred).await;
+            if let Some(payload) = delivery_data.payload
+                && let Some(cred) = serde_json::from_str::<git_cred::GitCredential>(&payload).ok()
+            {
+                let _ = git_cred::process_credential(client_name.clone(), cred).await;
             } else {
                 eprintln!("Invalid git credential JSON");
+                send::send_log_local(
+                    client_name.clone(),
+                    "[git-credential] Invalid git credential JSON".into(),
+                );
             }
         }
         "shell" => {
-            if let Some(shell_param) = serde_json::from_str::<shell::ShellParam>(&payload).ok() {
-                shell::process_shell(shell_param);
+            if let Some(payload) = delivery_data.payload
+                && let Some(shell_param) = serde_json::from_str::<shell::ShellParam>(&payload).ok()
+            {
+                shell::process_shell(client_name.clone(), shell_param);
             } else {
                 eprintln!("Invalid shell JSON");
+                send::send_log_local(client_name.clone(), "[shell] Invalid shell JSON".into());
             }
+        }
+        "test" => {
+            test_receive(client_name.clone());
         }
         _ => {
             eprintln!("Unknown method: {}", method);
@@ -104,38 +124,31 @@ async fn dispatcher(delivery_data: DeliveryData, user: &String) {
     }
 }
 
-async fn on_delivery(
-    channel: &lapin::Channel,
-    delivery: lapin::message::Delivery,
-    user: &String,
-) -> Result<()> {
-    let data = &delivery.data;
-    delivery
-        .ack(lapin::options::BasicAckOptions::default())
-        .await?;
-    let body_str = String::from_utf8_lossy(data);
+async fn on_delivery(mut delivery: lapin::message::Delivery, client_name: &String) -> Result<()> {
+    let data = std::mem::take(&mut delivery.data);
+    tokio::spawn(async move {
+        let _ = delivery.ack(BasicAckOptions::default()).await;
+    });
+    let body_str = String::from_utf8_lossy(&data);
     println!("Received message: {}", body_str);
     match serde_json::from_str::<DeliveryData>(&body_str) {
         Ok(delivery_data) => {
-            dispatcher(delivery_data, user).await;
+            dispatcher(delivery_data, client_name).await;
         }
         Err(e) => {
             eprintln!("Invalid JSON: {}", e);
         }
     }
 
-    channel
-        .basic_ack(delivery.delivery_tag, Default::default())
-        .await?;
     Ok(())
 }
 
-async fn rabbit_stuff(
+async fn connection_loop(
     amqp_addr: &String,
     amqp_addr_for_print: &String,
     auth_cert: &RabbitMQCerts,
     routing_key: &String,
-    user: &String,
+    client_name: &String,
 ) -> Result<()> {
     let conn: Connection;
     match auth_cert.use_crt {
@@ -199,7 +212,7 @@ async fn rabbit_stuff(
     while let Some(delivery) = consumer.next().await {
         match delivery {
             Ok(delivery) => {
-                let _ = on_delivery(&channel, delivery, user).await;
+                let _ = on_delivery(delivery, client_name).await;
             }
             Err(e) => {
                 eprintln!("Failed to consume message: {:?}", e);
@@ -238,15 +251,64 @@ fn analyze_amqp_addr(args: &Args) -> AnalyzedParams {
         amqp_addr = format!("{}/{}", amqp_addr, vhost);
         amqp_addr_for_print = format!("{}/{}", amqp_addr_for_print, vhost);
     }
-    let routing_key = args.routing_key.unwrap_or_else(|| args.user.clone() + ".*");
+    let client_name = args.client_name.unwrap_or_else(|| args.user.clone());
+    let routing_key = format!("{}.*", client_name);
     AnalyzedParams {
         amqp_addr,
         amqp_addr_for_print,
         routing_key,
-        user: args.user,
+        client_name,
         cafile: args.cafile,
         certfile: args.certfile,
         keyfile: args.keyfile,
+    }
+}
+
+fn rabbit_robust_connect(
+    amqp_addr: String,
+    amqp_addr_for_print: String,
+    auth_cert: RabbitMQCerts,
+    routing_key: String,
+    client_name: String,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tracing::debug!("Reconnecting to rabbitmq");
+        try_connection_loop(
+            amqp_addr,
+            amqp_addr_for_print,
+            auth_cert,
+            routing_key,
+            client_name,
+        )
+        .await;
+    });
+}
+
+async fn try_connection_loop(
+    amqp_addr: String,
+    amqp_addr_for_print: String,
+    auth_cert: RabbitMQCerts,
+    routing_key: String,
+    client_name: String,
+) {
+    if let Err(err) = connection_loop(
+        &amqp_addr,
+        &amqp_addr_for_print,
+        &auth_cert,
+        &routing_key,
+        &client_name,
+    )
+    .await
+    {
+        tracing::error!("Error: {}", err);
+        rabbit_robust_connect(
+            amqp_addr,
+            amqp_addr_for_print,
+            auth_cert,
+            routing_key,
+            client_name,
+        );
     }
 }
 
@@ -288,43 +350,8 @@ async fn main() -> Result<()> {
         params.amqp_addr_for_print,
         auth_cert,
         params.routing_key,
-        params.user,
+        params.client_name,
     );
     std::future::pending::<()>().await;
     Ok(())
-}
-
-fn rabbit_robust_connect(
-    amqp_addr: String,
-    amqp_addr_for_print: String,
-    auth_cert: RabbitMQCerts,
-    routing_key: String,
-    user: String,
-) {
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-        tracing::debug!("Reconnecting to rabbitmq");
-        try_rabbit_stuff(amqp_addr, amqp_addr_for_print, auth_cert, routing_key, user).await;
-    });
-}
-
-async fn try_rabbit_stuff(
-    amqp_addr: String,
-    amqp_addr_for_print: String,
-    auth_cert: RabbitMQCerts,
-    routing_key: String,
-    user: String,
-) {
-    if let Err(err) = rabbit_stuff(
-        &amqp_addr,
-        &amqp_addr_for_print,
-        &auth_cert,
-        &routing_key,
-        &user,
-    )
-    .await
-    {
-        tracing::error!("Error: {}", err);
-        rabbit_robust_connect(amqp_addr, amqp_addr_for_print, auth_cert, routing_key, user);
-    }
 }

@@ -4,6 +4,8 @@ use serde::Deserialize;
 use std::process::{Command, Stdio};
 use which::which;
 
+use crate::send;
+
 #[derive(Deserialize, Debug)]
 pub struct GitCredential {
     protocol: String,
@@ -13,7 +15,7 @@ pub struct GitCredential {
     password: String,
 }
 
-pub async fn process_credential(cred: GitCredential) -> Result<()> {
+pub async fn process_credential(client_name: String, cred: GitCredential) -> Result<()> {
     println!("Received credential: {:?}", cred);
 
     if cred.host == "github.com" && cred.protocol == "https" {
@@ -69,6 +71,11 @@ pub async fn process_credential(cred: GitCredential) -> Result<()> {
     if !status.success() {
         eprintln!("git credential approve failed");
     }
+
+    send::send_log_local(
+        client_name,
+        format!("[git-credential] Updated credential: {:?}", cred),
+    );
 
     Ok(())
 }
