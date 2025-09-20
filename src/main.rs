@@ -55,6 +55,7 @@ struct AnalyzedParams {
 struct DeliveryData {
     sender: String,
     method: String,
+    #[debug(ignore)]
     payload: Option<String>,
 }
 
