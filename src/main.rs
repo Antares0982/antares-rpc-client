@@ -236,7 +236,7 @@ async fn connection_loop(
                 let _ = on_delivery(delivery, client_name).await;
             }
             Err(e) => {
-                eprintln!("Failed to consume message: {:?}", e);
+                return Err(anyhow!("Failed to consume message: {:?}", e));
             }
         }
     }
