@@ -1,0 +1,14 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Push nix build to cachix",
+            "type": "shell",
+            "command": "CACHIX_AUTH_TOKEN=$(cat $HOME/configs/cachix_token.txt) sh -c \"nix build . && cachix push antares0982 result\"",
+            "group": {
+                "kind": "build",
+            },
+            "hide": false
+        }
+    ]
+}
