@@ -97,7 +97,16 @@ async fn dispatcher(delivery_data: DeliveryData, client_name: &String) {
             if let Some(payload) = delivery_data.payload
                 && let Some(cred) = serde_json::from_str::<git_cred::GitCredential>(&payload).ok()
             {
-                let _ = git_cred::process_credential(client_name.clone(), cred).await;
+                match git_cred::process_credential(client_name.clone(), cred).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("Error processing git credential: {}", e);
+                        send::send_log_local(
+                            client_name.clone(),
+                            format!("[git-credential] Error: {}", e),
+                        );
+                    }
+                }
             } else {
                 eprintln!("Invalid git credential JSON");
                 send::send_log_local(
@@ -125,7 +134,7 @@ async fn dispatcher(delivery_data: DeliveryData, client_name: &String) {
     }
 }
 
-async fn on_delivery(mut delivery: lapin::message::Delivery, client_name: &String) -> Result<()> {
+async fn on_delivery(mut delivery: lapin::message::Delivery, client_name: &String) {
     let data = std::mem::take(&mut delivery.data);
     tokio::spawn(async move {
         let _ = delivery.ack(BasicAckOptions::default()).await;
@@ -140,8 +149,6 @@ async fn on_delivery(mut delivery: lapin::message::Delivery, client_name: &Strin
             eprintln!("Invalid JSON: {}", e);
         }
     }
-
-    Ok(())
 }
 
 async fn connection_loop(
@@ -234,7 +241,7 @@ async fn connection_loop(
     while let Some(delivery) = consumer.next().await {
         match delivery {
             Ok(delivery) => {
-                let _ = on_delivery(delivery, client_name).await;
+                on_delivery(delivery, client_name).await;
             }
             Err(e) => {
                 return Err(anyhow!("Failed to consume message: {:?}", e));
