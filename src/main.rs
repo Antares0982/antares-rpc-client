@@ -273,7 +273,7 @@ fn rabbit_robust_connect(
 ) {
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-        tracing::debug!("Reconnecting to rabbitmq");
+        eprintln!("Connecting to rabbitmq");
         try_connection_loop(
             amqp_addr,
             amqp_addr_for_print,
@@ -301,7 +301,7 @@ async fn try_connection_loop(
     )
     .await
     {
-        tracing::error!("Error: {}", err);
+        eprintln!("Error: {}", err);
         rabbit_robust_connect(
             amqp_addr,
             amqp_addr_for_print,
@@ -317,7 +317,6 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let params = analyze_amqp_addr(&args);
-    println!("Connecting to RabbitMQ at {}", params.amqp_addr_for_print);
 
     // let conn: Connection;
     let auth_cert: RabbitMQCerts;
