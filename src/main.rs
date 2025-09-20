@@ -164,19 +164,8 @@ async fn connection_loop(
             conn = Connection::connect(&amqp_addr, ConnectionProperties::default()).await?;
         }
     }
+    // channel, queue declare
     let channel = conn.create_channel().await?;
-
-    let exchange = routing_key.split(".").next().unwrap_or("all");
-
-    channel
-        .exchange_declare(
-            &exchange,
-            ExchangeKind::Topic,
-            ExchangeDeclareOptions::default(),
-            FieldTable::default(),
-        )
-        .await?;
-
     let queue = channel
         .queue_declare(
             "",
@@ -188,6 +177,26 @@ async fn connection_loop(
         )
         .await?;
 
+    // exchanges
+    let exchange = routing_key.split(".").next().unwrap_or("unknown");
+    channel
+        .exchange_declare(
+            &exchange,
+            ExchangeKind::Topic,
+            ExchangeDeclareOptions::default(),
+            FieldTable::default(),
+        )
+        .await?;
+    channel
+        .exchange_declare(
+            "all",
+            ExchangeKind::Topic,
+            ExchangeDeclareOptions::default(),
+            FieldTable::default(),
+        )
+        .await?;
+
+    // queue bind
     channel
         .queue_bind(
             queue.name().as_str(),
@@ -197,8 +206,20 @@ async fn connection_loop(
             FieldTable::default(),
         )
         .await?;
+    channel
+        .queue_bind(
+            queue.name().as_str(),
+            "all",
+            "all.#",
+            QueueBindOptions::default(),
+            FieldTable::default(),
+        )
+        .await?;
 
-    println!("Connected to RabbitMQ at {}", amqp_addr_for_print);
+    println!(
+        "Connected to RabbitMQ at {}, client exchange = {}, client routing_key = {}",
+        amqp_addr_for_print, exchange, routing_key
+    );
 
     let mut consumer = channel
         .basic_consume(
@@ -252,7 +273,10 @@ fn analyze_amqp_addr(args: &Args) -> AnalyzedParams {
         amqp_addr_for_print = format!("{}/{}", amqp_addr_for_print, vhost);
     }
     let client_name = args.client_name.unwrap_or_else(|| args.user.clone());
-    let routing_key = format!("{}.*", client_name);
+    if client_name == "all" {
+        panic!("client_name cannot be 'all'");
+    }
+    let routing_key = format!("{}.#", client_name);
     AnalyzedParams {
         amqp_addr,
         amqp_addr_for_print,
