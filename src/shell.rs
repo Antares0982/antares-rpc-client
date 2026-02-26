@@ -11,6 +11,10 @@ pub struct ShellParam {
 
 pub fn process_shell(client_name: String, shell_param: ShellParam) {
     println!("Received shell command: {:?}", shell_param);
+    send::send_log_local(
+        client_name.clone(),
+        format!("[shell] Received shell command: {:?}", shell_param),
+    );
 
     if shell_param.command.is_empty() {
         println!("No command provided");
